@@ -416,10 +416,10 @@ while running:
             speedy = np.array([dot.speed[1] for dot in dots], dtype=np.float32)
             life_cycles = np.array([dot.life_cycles for dot in dots], dtype=np.int32)
             max_cycles = np.array([dot.max_cycles for dot in dots], dtype=np.int32)
-            res_o = np.array([dot.resources["o"] for dot in dots], dtype=np.float32)
+            res_p = np.array([dot.resources["p"] for dot in dots], dtype=np.float32)
             res_c = np.array([dot.resources["c"] for dot in dots], dtype=np.float32)
             res_n = np.array([dot.resources["n"] for dot in dots], dtype=np.float32)
-            repro_o = np.array([dot.reproduction_resource["o"] for dot in dots], dtype=np.float32)
+            repro_p = np.array([dot.reproduction_resource["p"] for dot in dots], dtype=np.float32)
             repro_c = np.array([dot.reproduction_resource["c"] for dot in dots], dtype=np.float32)
             repro_n = np.array([dot.reproduction_resource["n"] for dot in dots], dtype=np.float32)
             opt_ph = np.array([dot.optimal_ph for dot in dots], dtype=np.float32)
@@ -432,10 +432,10 @@ while running:
                 speedy,
                 life_cycles,
                 max_cycles,
-                res_o,
+                res_p,
                 res_c,
                 res_n,
-                repro_o,
+                repro_p,
                 repro_c,
                 repro_n,
                 opt_ph,
@@ -449,16 +449,16 @@ while running:
                 REPRO_DEBUF_MIN,
                 WIDTH,
                 HEIGHT,
-                resource_pool["o"],
+                resource_pool["p"],
                 resource_pool["c"],
                 resource_pool["n"],
             )
 
             if np.any(dead_mask):
-                dead_o = float(res_o[dead_mask].sum())
+                dead_p = float(res_p[dead_mask].sum())
                 dead_c = float(res_c[dead_mask].sum())
                 dead_n = float(res_n[dead_mask].sum())
-                nutrient.deadNutreints["o"] += dead_o
+                nutrient.deadNutreints["p"] += dead_p
                 nutrient.deadNutreints["c"] += dead_c
                 nutrient.deadNutreints["n"] += dead_n
 
@@ -470,7 +470,7 @@ while running:
                 speedx = speedx[alive_mask]
                 speedy = speedy[alive_mask]
                 life_cycles = life_cycles[alive_mask]
-                res_o = res_o[alive_mask]
+                res_p = res_p[alive_mask]
                 res_c = res_c[alive_mask]
                 res_n = res_n[alive_mask]
                 reproduce_mask = reproduce_mask[alive_mask]
@@ -483,7 +483,7 @@ while running:
                 dot.speed[0] = float(speedx[idx])
                 dot.speed[1] = float(speedy[idx])
                 dot.life_cycles = int(life_cycles[idx])
-                dot.resources["o"] = float(res_o[idx])
+                dot.resources["p"] = float(res_p[idx])
                 dot.resources["c"] = float(res_c[idx])
                 dot.resources["n"] = float(res_n[idx])
 

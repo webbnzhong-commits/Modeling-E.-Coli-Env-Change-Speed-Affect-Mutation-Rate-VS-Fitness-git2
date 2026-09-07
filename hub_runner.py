@@ -1363,15 +1363,64 @@ def _predict_piecewise_gaussian(
     return apex_y * math.exp(expo)
 
 
+def _format_desmos_power(value: float) -> str:
+    if abs(float(value) - round(float(value))) < 1e-9:
+        return str(int(round(float(value))))
+    return f"{float(value):.6g}"
+
+
+def _format_desmos_gaussian_expression(
+    apex_y: float,
+    apex_x: float,
+    sigma: float,
+    shape_power: float,
+) -> str:
+    power = _format_desmos_power(float(shape_power))
+    center_sign = "-" if float(apex_x) >= 0 else "+"
+    center_abs = abs(float(apex_x))
+    return (
+        f"{float(apex_y):.6g}*\\exp(-"
+        f"(\\left(x{center_sign}{center_abs:.6g}\\right)^{{{power}}})"
+        f"/(2*{float(sigma):.6g}^{{{power}}}))"
+    )
+
+
+def _format_desmos_piecewise_gaussian(
+    apex_y: float,
+    apex_x: float,
+    sigma_left: float,
+    sigma_right: float,
+    shape_power: float,
+) -> str:
+    left_expr = _format_desmos_gaussian_expression(apex_y, apex_x, sigma_left, shape_power)
+    right_expr = _format_desmos_gaussian_expression(apex_y, apex_x, sigma_right, shape_power)
+    if abs(float(sigma_left) - float(sigma_right)) <= 1e-12:
+        return left_expr
+    return (
+        f"\\left\\{{x\\le{float(apex_x):.6g}:{left_expr},"
+        f"x>{float(apex_x):.6g}:{right_expr}\\right\\}}"
+    )
+
+
 def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
+    numeric_points: list[tuple[float, float]] = []
+    for pair in points:
+        if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+            continue
+        x_val, y_val = pair[0], pair[1]
+        if _is_number(x_val) and _is_number(y_val):
+            numeric_points.append((float(x_val), float(y_val)))
+    points = numeric_points
     if len(points) < 3:
         return None
-    apex_x, apex_point_y = max(points, key=lambda p: p[1])
+    apex_point_x, apex_point_y = max(points, key=lambda p: p[1])
     xs = [float(x) for x, _ in points]
     ys = [float(y) for _, y in points]
+    x_min = min(xs)
+    x_max = max(xs)
     x_range = max(xs) - min(xs) if xs else 0.0
     if (not math.isfinite(x_range)) or x_range <= 0:
-        x_range = 1.0
+        return None
 
     sigma_min = max(1e-6, x_range * 1e-4)
     sigma_max = max(sigma_min * 10.0, x_range * 10.0)
@@ -1385,9 +1434,62 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
             return hi
         return value
 
-    power_candidates = [float(v) / 10.0 for v in range(1, 101)]
+    # Keep master bell curves differentiable across the displayed evo-speed range.
+    # Powers below 1 create cusp-like behavior at the apex; p=2 is the standard
+    # Gaussian shape and has a smooth first derivative through the stitched apex.
+    power_candidates = [2.0]
 
-    def _solve_amplitude_and_sse(sigma_left: float, sigma_right: float, shape_power: float):
+    def _clamp_apex(value: float) -> float:
+        return max(float(x_min), min(float(x_max), float(value)))
+
+    def _pearson_r_for_predicted(predicted: list[float]) -> float | None:
+        if len(predicted) != len(ys) or len(predicted) < 2:
+            return None
+        mean_y = sum(ys) / float(len(ys))
+        mean_pred = sum(predicted) / float(len(predicted))
+        ss_y = sum((y - mean_y) ** 2 for y in ys)
+        ss_pred = sum((p - mean_pred) ** 2 for p in predicted)
+        if ss_y <= 1e-12 or ss_pred <= 1e-12:
+            return None
+        cov = sum((y - mean_y) * (p - mean_pred) for y, p in zip(ys, predicted))
+        r_val = cov / math.sqrt(ss_y * ss_pred)
+        return max(-1.0, min(1.0, float(r_val)))
+
+    def _fit_is_better(candidate: dict | None, current: dict | None) -> bool:
+        if not isinstance(candidate, dict):
+            return False
+        if not isinstance(current, dict):
+            return True
+        candidate_r = candidate.get("r")
+        current_r = current.get("r")
+        candidate_score = float(candidate_r) if _is_number(candidate_r) else -math.inf
+        current_score = float(current_r) if _is_number(current_r) else -math.inf
+        if candidate_score > current_score + 1e-10:
+            return True
+        if candidate_score < current_score - 1e-10:
+            return False
+        candidate_sse = float(candidate.get("sse", math.inf))
+        current_sse = float(current.get("sse", math.inf))
+        sse_eps = 1e-9 * max(1.0, abs(current_sse))
+        if candidate_sse < current_sse - sse_eps:
+            return True
+        if candidate_sse > current_sse + sse_eps:
+            return False
+        candidate_apex = candidate.get("apex_x")
+        current_apex = current.get("apex_x")
+        if _is_number(candidate_apex) and _is_number(current_apex):
+            return abs(float(candidate_apex) - float(apex_point_x)) < abs(
+                float(current_apex) - float(apex_point_x)
+            )
+        return False
+
+    def _solve_fit_stats(
+        apex_x: float,
+        sigma_left: float,
+        sigma_right: float,
+        shape_power: float,
+    ) -> dict | None:
+        apex_x = _clamp_apex(float(apex_x))
         sigma_left = max(sigma_min, min(sigma_max, float(sigma_left)))
         sigma_right = max(sigma_min, min(sigma_max, float(sigma_right)))
         power = max(0.1, float(shape_power))
@@ -1398,48 +1500,60 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
             dx = abs(float(x) - float(apex_x))
             sigma = sigma_left if float(x) <= float(apex_x) else sigma_right
             k = math.exp(-((dx**power) / (2.0 * (sigma**power))))
+            if not math.isfinite(k):
+                continue
             sum_yk += float(y) * k
             sum_k2 += k * k
             ks.append((float(y), k))
         if sum_k2 <= 1e-15:
             return None
         amplitude = sum_yk / sum_k2
+        if not math.isfinite(amplitude):
+            return None
         sse = 0.0
+        predicted = []
         for y, k in ks:
-            diff = y - (amplitude * k)
+            pred = amplitude * k
+            predicted.append(float(pred))
+            diff = y - pred
             sse += diff * diff
-        return float(amplitude), float(sse)
+        return {
+            "apex_x": float(apex_x),
+            "apex_y": float(amplitude),
+            "sigma_left": float(sigma_left),
+            "sigma_right": float(sigma_right),
+            "shape_power": float(power),
+            "sse": float(sse),
+            "r": _pearson_r_for_predicted(predicted),
+        }
 
-    left_d2 = [
-        (float(apex_x) - float(x)) ** 2
-        for x, y in points
-        if float(x) <= float(apex_x) and _is_number(y) and float(y) > 0
-    ]
-    right_d2 = [
-        (float(x) - float(apex_x)) ** 2
-        for x, y in points
-        if float(x) >= float(apex_x) and _is_number(y) and float(y) > 0
-    ]
-
-    def _initial_sigma(d2_values: list[float]) -> float:
+    def _initial_sigma(apex_x: float, left_side: bool) -> float:
+        d2_values = [
+            (abs(float(x) - float(apex_x)) ** 2)
+            for x, y in points
+            if (
+                (float(x) <= float(apex_x) if left_side else float(x) >= float(apex_x))
+                and _is_number(y)
+                and float(y) > 0
+            )
+        ]
         if not d2_values:
             return max(0.05, x_range * 0.12)
         mean_abs = sum(math.sqrt(max(0.0, d2)) for d2 in d2_values) / len(d2_values)
         return max(sigma_min, min(sigma_max, mean_abs if mean_abs > 0 else x_range * 0.12))
 
-    global_best = None
-    for shape_power in power_candidates:
-        sigma_left = _initial_sigma(left_d2)
-        sigma_right = _initial_sigma(right_d2)
-        best = _solve_amplitude_and_sse(sigma_left, sigma_right, shape_power)
-        if best is None:
-            continue
-        best_a, best_sse = best
+    def _fit_sigmas_for_apex(apex_x: float, shape_power: float) -> dict | None:
+        apex_x = _clamp_apex(apex_x)
+        sigma_left = _initial_sigma(apex_x, left_side=True)
+        sigma_right = _initial_sigma(apex_x, left_side=False)
+        best = _solve_fit_stats(apex_x, sigma_left, sigma_right, shape_power)
+        if not isinstance(best, dict):
+            return None
         best_log_left = _clamp_log_sigma(math.log(max(sigma_min, sigma_left)))
         best_log_right = _clamp_log_sigma(math.log(max(sigma_min, sigma_right)))
 
         step = 1.0
-        for _ in range(20):
+        for _ in range(7):
             improved = False
             for side in ("left", "right"):
                 base_log = best_log_left if side == "left" else best_log_right
@@ -1450,45 +1564,169 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
                     base_log + (step * 0.5),
                     base_log + step,
                 ]
-                local_best = (best_a, best_sse, best_log_left, best_log_right)
+                local_best = dict(best)
+                local_log_left = best_log_left
+                local_log_right = best_log_right
                 for cand in candidates:
                     cand_log = _clamp_log_sigma(cand)
                     log_left = cand_log if side == "left" else best_log_left
                     log_right = best_log_right if side == "left" else cand_log
-                    trial = _solve_amplitude_and_sse(
+                    trial = _solve_fit_stats(
+                        apex_x,
                         math.exp(log_left),
                         math.exp(log_right),
                         shape_power,
                     )
-                    if trial is None:
-                        continue
-                    a_val, sse_val = trial
-                    if sse_val + 1e-12 < local_best[1]:
-                        local_best = (a_val, sse_val, log_left, log_right)
-                if local_best[1] + 1e-12 < best_sse:
-                    best_a, best_sse, best_log_left, best_log_right = local_best
+                    if _fit_is_better(trial, local_best):
+                        local_best = trial
+                        local_log_left = log_left
+                        local_log_right = log_right
+                if _fit_is_better(local_best, best):
+                    best = local_best
+                    best_log_left = local_log_left
+                    best_log_right = local_log_right
                     improved = True
             if not improved:
                 step *= 0.5
                 if step < 1e-3:
                     break
+        return best
 
-        fitted_left = max(sigma_min, min(sigma_max, math.exp(best_log_left)))
-        fitted_right = max(sigma_min, min(sigma_max, math.exp(best_log_right)))
-        if (global_best is None) or (best_sse + 1e-12 < float(global_best["sse"])):
-            global_best = {
-                "apex_y": float(best_a),
-                "sse": float(best_sse),
-                "sigma_left": float(fitted_left),
-                "sigma_right": float(fitted_right),
-                "shape_power": float(shape_power),
-            }
+    def _apex_candidates() -> list[float]:
+        candidates: list[float] = []
+        seen: set[int] = set()
+        scale = max(1e-12, x_range)
+
+        def _add(value: float) -> None:
+            value = _clamp_apex(value)
+            key = int(round((value - x_min) / scale * 1_000_000_000))
+            if key in seen:
+                return
+            seen.add(key)
+            candidates.append(float(value))
+
+        _add(float(apex_point_x))
+        unique_xs = sorted(set(xs))
+        sample_count = 17
+        for idx in range(sample_count):
+            _add(float(x_min) + (x_range * float(idx) / float(sample_count - 1)))
+        if len(unique_xs) <= sample_count:
+            for value in unique_xs:
+                _add(float(value))
+        else:
+            for idx in range(sample_count):
+                src_idx = int(
+                    round(
+                        float(idx) * float(len(unique_xs) - 1) / float(sample_count - 1)
+                    )
+                )
+                _add(float(unique_xs[src_idx]))
+        for x_val, _ in sorted(points, key=lambda p: p[1], reverse=True)[:6]:
+            _add(float(x_val))
+        return candidates
+
+    def _fit_rank_key(item: dict) -> tuple[float, float, float]:
+        r_val = item.get("r")
+        r_score = float(r_val) if _is_number(r_val) else -math.inf
+        sse = float(item.get("sse", math.inf))
+        apex = (
+            float(item.get("apex_x"))
+            if _is_number(item.get("apex_x"))
+            else float(apex_point_x)
+        )
+        return (r_score, -sse, -abs(apex - float(apex_point_x)))
+
+    seed_fits = []
+    for shape_power in power_candidates:
+        for candidate_apex_x in _apex_candidates():
+            sigma_left = _initial_sigma(candidate_apex_x, left_side=True)
+            sigma_right = _initial_sigma(candidate_apex_x, left_side=False)
+            seed = _solve_fit_stats(candidate_apex_x, sigma_left, sigma_right, shape_power)
+            if isinstance(seed, dict):
+                seed_fits.append(seed)
+
+    if not seed_fits:
+        return None
+
+    global_best = None
+    seed_fits.sort(key=_fit_rank_key, reverse=True)
+    for seed in seed_fits[:8]:
+        best = _fit_sigmas_for_apex(float(seed["apex_x"]), float(seed["shape_power"]))
+        if _fit_is_better(best, global_best):
+            global_best = best
+
+    if not isinstance(global_best, dict):
+        return None
+
+    best_log_left = _clamp_log_sigma(math.log(max(sigma_min, float(global_best["sigma_left"]))))
+    best_log_right = _clamp_log_sigma(math.log(max(sigma_min, float(global_best["sigma_right"]))))
+    apex_step = x_range / 8.0
+    log_step = 0.75
+    shape_power = float(global_best["shape_power"])
+    for _ in range(16):
+        improved = False
+        for dimension in ("apex", "left", "right"):
+            if dimension == "apex":
+                base = float(global_best["apex_x"])
+                candidates = [
+                    base - apex_step,
+                    base - (apex_step * 0.5),
+                    base,
+                    base + (apex_step * 0.5),
+                    base + apex_step,
+                ]
+            else:
+                base = best_log_left if dimension == "left" else best_log_right
+                candidates = [
+                    base - log_step,
+                    base - (log_step * 0.5),
+                    base,
+                    base + (log_step * 0.5),
+                    base + log_step,
+                ]
+            local_best = dict(global_best)
+            local_log_left = best_log_left
+            local_log_right = best_log_right
+            for cand in candidates:
+                if dimension == "apex":
+                    trial_apex = _clamp_apex(cand)
+                    log_left = best_log_left
+                    log_right = best_log_right
+                elif dimension == "left":
+                    trial_apex = float(global_best["apex_x"])
+                    log_left = _clamp_log_sigma(cand)
+                    log_right = best_log_right
+                else:
+                    trial_apex = float(global_best["apex_x"])
+                    log_left = best_log_left
+                    log_right = _clamp_log_sigma(cand)
+                trial = _solve_fit_stats(
+                    trial_apex,
+                    math.exp(log_left),
+                    math.exp(log_right),
+                    shape_power,
+                )
+                if _fit_is_better(trial, local_best):
+                    local_best = trial
+                    local_log_left = log_left
+                    local_log_right = log_right
+            if _fit_is_better(local_best, global_best):
+                global_best = local_best
+                best_log_left = local_log_left
+                best_log_right = local_log_right
+                improved = True
+        if not improved:
+            apex_step *= 0.5
+            log_step *= 0.5
+            if apex_step < (x_range * 1e-5) and log_step < 1e-3:
+                break
 
     if not isinstance(global_best, dict):
         return None
     sigma_left = float(global_best["sigma_left"])
     sigma_right = float(global_best["sigma_right"])
     shape_power = float(global_best["shape_power"])
+    apex_x = float(global_best["apex_x"])
     apex_y = float(global_best["apex_y"])
     if not math.isfinite(apex_y):
         return None
@@ -1516,15 +1754,30 @@ def _fit_stitched_gaussian(points: list[tuple[float, float]]) -> dict | None:
         f"y={apex_y:.6g}*exp(-(|x-{apex_x:.6g}|^{shape_power:.6g})/(2*{sigma_right:.6g}^{shape_power:.6g})) "
         f"for x>{apex_x:.6g}"
     )
+    desmos_equation = _format_desmos_piecewise_gaussian(
+        apex_y,
+        float(apex_x),
+        sigma_left,
+        sigma_right,
+        shape_power,
+    )
     return {
         "apex_x": float(apex_x),
         "apex_y": float(apex_y),
+        "apex_point_x": float(apex_point_x),
         "apex_point_y": float(apex_point_y),
         "sigma_left": float(sigma_left),
         "sigma_right": float(sigma_right),
         "shape_power": float(shape_power),
+        "r": (
+            float(global_best["r"])
+            if _is_number(global_best.get("r"))
+            else None
+        ),
         "r2": (None if r2 is None else float(r2)),
+        "fit_objective": "pearson_r",
         "equation": equation,
+        "desmos_equation": desmos_equation,
     }
 
 

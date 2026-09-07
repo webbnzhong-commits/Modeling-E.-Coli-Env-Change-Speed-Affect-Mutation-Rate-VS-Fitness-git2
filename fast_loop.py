@@ -18,10 +18,10 @@ if HAS_NUMBA:
         speedy,
         life_cycles,
         max_cycles,
-        res_o,
+        res_p,
         res_c,
         res_n,
-        repro_o,
+        repro_p,
         repro_c,
         repro_n,
         opt_ph,
@@ -39,7 +39,7 @@ if HAS_NUMBA:
         repro_debuf_min,
         width,
         height,
-        pool_o,
+        pool_p,
         pool_c,
         pool_n,
     ):
@@ -65,8 +65,8 @@ if HAS_NUMBA:
                 dead[i] = True
                 continue
 
-            if pool_o > 0:
-                res_o[i] += pool_o
+            if pool_p > 0:
+                res_p[i] += pool_p
             if pool_c > 0:
                 res_c[i] += pool_c
             if pool_n > 0:
@@ -88,11 +88,11 @@ if HAS_NUMBA:
             if debuf < repro_debuf_min:
                 debuf = repro_debuf_min
 
-            if (res_o[i] / debuf >= repro_o[i]
+            if (res_p[i] / debuf >= repro_p[i]
                 and res_c[i] / debuf >= repro_c[i]
                 and res_n[i] / debuf >= repro_n[i]):
                 reproduce[i] = True
-                res_o[i] -= repro_o[i]
+                res_p[i] -= repro_p[i]
                 res_c[i] -= repro_c[i]
                 res_n[i] -= repro_n[i]
 
@@ -107,10 +107,10 @@ def _fast_update_np(
     speedy,
     life_cycles,
     max_cycles,
-    res_o,
+    res_p,
     res_c,
     res_n,
-    repro_o,
+    repro_p,
     repro_c,
     repro_n,
     opt_ph,
@@ -128,7 +128,7 @@ def _fast_update_np(
     repro_debuf_min,
     width,
     height,
-    pool_o,
+    pool_p,
     pool_c,
     pool_n,
 ):
@@ -144,8 +144,8 @@ def _fast_update_np(
     life_cycles[:] = life_cycles + 1
     dead = life_cycles >= max_cycles
 
-    if pool_o > 0:
-        res_o[:] = res_o + pool_o
+    if pool_p > 0:
+        res_p[:] = res_p + pool_p
     if pool_c > 0:
         res_c[:] = res_c + pool_c
     if pool_n > 0:
@@ -158,13 +158,13 @@ def _fast_update_np(
     debuf = np.maximum(repro_debuf_min, ph_effect * temp_effect)
 
     reproduce = (
-        (res_o / debuf >= repro_o)
+        (res_p / debuf >= repro_p)
         & (res_c / debuf >= repro_c)
         & (res_n / debuf >= repro_n)
         & (~dead)
     )
     if np.any(reproduce):
-        res_o[reproduce] -= repro_o[reproduce]
+        res_p[reproduce] -= repro_p[reproduce]
         res_c[reproduce] -= repro_c[reproduce]
         res_n[reproduce] -= repro_n[reproduce]
     return dead, reproduce

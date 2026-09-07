@@ -31,6 +31,9 @@ _SIM_COLORS = [
 _TIMELINE_MAX_SNAPSHOTS_PER_RUN = 24
 _BACKGROUND_MODEL_UPDATE_EVERY_ROWS = 12
 _HUB_LOADING_WORKERS = 6
+_MASTER_DETAIL_CURVE_MIN_X = 0.05
+_MASTER_DETAIL_CURVE_MAX_X = 0.4
+_MASTER_DETAIL_CURVE_SAMPLES = 400
 
 
 try:
@@ -200,6 +203,25 @@ def _bell_curve_fit_stats(points: list[tuple[float, float]], fit: dict | None) -
         "min_predicted": min(predicted),
         "max_predicted": max(predicted),
     }
+
+
+def _fit_desmos_equation(fit: dict | None) -> str:
+    if not isinstance(fit, dict):
+        return ""
+    desmos = str(fit.get("desmos_equation", "")).strip()
+    if desmos:
+        return desmos
+    required = ("apex_y", "apex_x", "sigma_left", "sigma_right")
+    if not all(hr._is_number(fit.get(key)) for key in required):
+        return ""
+    shape_power = fit.get("shape_power", 2.0)
+    return hr._format_desmos_piecewise_gaussian(
+        float(fit["apex_y"]),
+        float(fit["apex_x"]),
+        float(fit["sigma_left"]),
+        float(fit["sigma_right"]),
+        float(shape_power) if hr._is_number(shape_power) else 2.0,
+    )
 
 
 def _apex_from_points(points: list[tuple[float, float]]) -> tuple[float | None, float | None]:
@@ -3243,8 +3265,15 @@ class HubViewer:
 
     def _draw_hub_graph(self, rect) -> None:
         pg = self.pg
-        pg.draw.rect(self.screen, (18, 20, 26), rect)
-        pg.draw.rect(self.screen, (74, 80, 94), rect, 1)
+        panel_bg = (15, 18, 24)
+        plot_bg = (10, 13, 18)
+        border = (73, 84, 104)
+        grid = (35, 43, 56)
+        tick_col = (158, 169, 188)
+        label_col = (205, 215, 230)
+        accent = (112, 215, 232)
+        pg.draw.rect(self.screen, panel_bg, rect)
+        pg.draw.rect(self.screen, border, rect, 1)
 
         header_x = rect.x + 10
         copy_reserved = 0
@@ -3260,12 +3289,12 @@ class HubViewer:
             header_w = max(60, rect.width - 20 - copy_reserved)
             line_1 = hr._fit_text(self.tiny, f"Equation: {equation}", header_w)
             line_2 = hr._fit_text(self.tiny, f"R^2: {float(best.get('r2')):.4f}", header_w)
-            col = (235, 210, 146)
+            col = accent
         else:
             header_w = max(60, rect.width - 20)
             line_1 = "Equation: not enough data"
             line_2 = "R^2: --"
-            col = (170, 170, 170)
+            col = tick_col
         self.screen.blit(self.tiny.render(line_1, True, col), (header_x, rect.y + 8))
         self.screen.blit(self.tiny.render(line_2, True, col), (header_x, rect.y + 24))
 
@@ -3275,12 +3304,17 @@ class HubViewer:
             self.hub_dot_hits = []
             return
 
-        plot_top = rect.y + 48
-        plot = pg.Rect(rect.x + 48, plot_top, rect.width - 64, rect.height - ((plot_top - rect.y) + 24))
+        plot_top = rect.y + 56
+        plot = pg.Rect(
+            rect.x + 76,
+            plot_top,
+            rect.width - 104,
+            rect.height - ((plot_top - rect.y) + 48),
+        )
         if plot.width <= 24 or plot.height <= 24:
             return
-        pg.draw.rect(self.screen, (12, 14, 19), plot)
-        pg.draw.rect(self.screen, (60, 66, 78), plot, 1)
+        pg.draw.rect(self.screen, plot_bg, plot)
+        pg.draw.rect(self.screen, border, plot, 1)
 
         xs = [float(p["x"]) for p in graph_points if hr._is_number(p.get("x"))]
         ys = [float(p["y"]) for p in graph_points if hr._is_number(p.get("y"))]
@@ -3311,6 +3345,31 @@ class HubViewer:
             py = plot.y + plot.height - int(((yv - min_y) / (max_y - min_y)) * plot.height)
             return px, py
 
+        def _lerp_color(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+            t = max(0.0, min(1.0, float(t)))
+            return (
+                int(a[0] + ((b[0] - a[0]) * t)),
+                int(a[1] + ((b[1] - a[1]) * t)),
+                int(a[2] + ((b[2] - a[2]) * t)),
+            )
+
+        def _fitness_color(t: float) -> tuple[int, int, int]:
+            t = max(0.0, min(1.0, float(t)))
+            low = (73, 138, 230)
+            mid = (74, 210, 175)
+            high = (242, 132, 103)
+            if t <= 0.5:
+                return _lerp_color(low, mid, t * 2.0)
+            return _lerp_color(mid, high, (t - 0.5) * 2.0)
+
+        for i in range(5):
+            gx = plot.x + int(plot.width * float(i) / 4.0)
+            gy = plot.y + int(plot.height * float(i) / 4.0)
+            pg.draw.line(self.screen, grid, (gx, plot.y), (gx, plot.bottom), 1)
+            pg.draw.line(self.screen, grid, (plot.x, gy), (plot.right, gy), 1)
+        pg.draw.line(self.screen, (98, 112, 137), (plot.x, plot.bottom), (plot.right, plot.bottom), 2)
+        pg.draw.line(self.screen, (98, 112, 137), (plot.x, plot.y), (plot.x, plot.bottom), 2)
+
         fit_segments = []
         if best:
             sample = []
@@ -3333,8 +3392,8 @@ class HubViewer:
         for point in graph_points:
             px, py = _to_px(float(point["x"]), float(point["y"]))
             n = max(0.0, min(1.0, (float(point["fitness"]) - fit_min) / fit_den))
-            radius = max(1, int(round(4 * n)))
-            color = (35 + int(220 * n), 128 + int(95 * n), 236 - int(166 * n))
+            radius = 2 + int(round(3 * n))
+            color = _fitness_color(n)
             if int(point.get("row_index", -1)) == selected_idx:
                 pg.draw.circle(self.screen, (255, 255, 255), (px, py), radius + 3, 1)
             pg.draw.circle(self.screen, color, (px, py), radius)
@@ -3347,20 +3406,40 @@ class HubViewer:
                 }
             )
         for start, end in fit_segments:
-            pg.draw.line(self.screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
+            pg.draw.line(self.screen, accent, _to_px(start[0], start[1]), _to_px(end[0], end[1]), 2)
 
-        min_y_txt = self.tiny.render(f"{raw_min_y:.3f}", True, (150, 150, 150))
-        max_y_txt = self.tiny.render(f"{raw_max_y:.3f}", True, (150, 150, 150))
-        min_x_txt = self.tiny.render(f"{raw_min_x:.3f}", True, (150, 150, 150))
-        max_x_txt = self.tiny.render(f"{raw_max_x:.3f}", True, (150, 150, 150))
-        x_lab = self.tiny.render("env change rate", True, (155, 155, 155))
-        y_lab = self.tiny.render("evo speed", True, (155, 155, 155))
+        min_y_txt = self.tiny.render(f"{raw_min_y:.3f}", True, tick_col)
+        max_y_txt = self.tiny.render(f"{raw_max_y:.3f}", True, tick_col)
+        min_x_txt = self.tiny.render(f"{raw_min_x:.3f}", True, tick_col)
+        max_x_txt = self.tiny.render(f"{raw_max_x:.3f}", True, tick_col)
+        x_lab = self.tiny.render("environmental change speed", True, label_col)
+        y_lab = pg.transform.rotate(self.tiny.render("evolution speed", True, label_col), 90)
         self.screen.blit(max_y_txt, (plot.x - 40, plot.y - 2))
         self.screen.blit(min_y_txt, (plot.x - 40, plot.bottom - 14))
         self.screen.blit(min_x_txt, (plot.x, plot.bottom + 3))
         self.screen.blit(max_x_txt, (plot.right - max_x_txt.get_width(), plot.bottom + 3))
-        self.screen.blit(x_lab, (plot.x + 6, plot.bottom + 18))
-        self.screen.blit(y_lab, (plot.x - 42, plot.y + 8))
+        self.screen.blit(x_lab, (plot.centerx - (x_lab.get_width() // 2), plot.bottom + 21))
+        self.screen.blit(y_lab, (rect.x + 14, plot.centery - (y_lab.get_height() // 2)))
+
+        legend_w = min(190, max(120, plot.width // 3))
+        legend_h = 7
+        legend_x = plot.right - legend_w - 8
+        legend_y = plot.y + 8
+        for i in range(legend_w):
+            n = float(i) / float(max(1, legend_w - 1))
+            pg.draw.line(
+                self.screen,
+                _fitness_color(n),
+                (legend_x + i, legend_y),
+                (legend_x + i, legend_y + legend_h),
+            )
+        pg.draw.rect(self.screen, (90, 104, 126), (legend_x, legend_y, legend_w, legend_h + 1), 1)
+        legend_label = self.tiny.render("fitness", True, label_col)
+        low_label = self.tiny.render("low", True, tick_col)
+        high_label = self.tiny.render("high", True, tick_col)
+        self.screen.blit(legend_label, (legend_x, legend_y + legend_h + 4))
+        self.screen.blit(low_label, (legend_x + 48, legend_y + legend_h + 4))
+        self.screen.blit(high_label, (legend_x + legend_w - high_label.get_width(), legend_y + legend_h + 4))
 
     def _draw_hub_graph_3d(
         self,
@@ -3863,14 +3942,22 @@ class HubViewer:
             msg = self.small.render("No selected simulation.", True, (170, 170, 170))
             self.screen.blit(msg, (rect.x + 10, rect.y + 8))
             return
+        selected_rows = self._selected_scatter_rows()
 
         step_label = int(row.get("step_index", 0)) + 1
         rate_label = row.get("env_rate")
-        master_label = row.get("master_run_num")
-        title = f"Selected Sim: step {step_label} | rate {float(rate_label):.2f}" if hr._is_number(rate_label) else f"Selected Sim: step {step_label}"
-        if master_label is not None:
-            title += f" | master_{int(master_label)}"
-        details_ready = bool(row.get("_full_loaded")) and isinstance(row.get("points"), list) and bool(row.get("points"))
+        title = (
+            f"Selected Sim: step {step_label} | environmental change speed {float(rate_label):.2f}"
+            if hr._is_number(rate_label)
+            else f"Selected Sim: step {step_label}"
+        )
+        details_ready = bool(selected_rows) and all(
+            bool(series_row.get("_full_loaded"))
+            and isinstance(series_row.get("points"), list)
+            and bool(series_row.get("points"))
+            for _, series_row in selected_rows[:2]
+            if isinstance(series_row, dict)
+        )
         details_btn_w = 72
         details_btn_h = 20
         details_btn = pg.Rect(rect.right - details_btn_w - 10, rect.y + 7, details_btn_w, details_btn_h)
@@ -3892,7 +3979,6 @@ class HubViewer:
         if details_ready:
             self._selected_details_button_rect = details_btn.copy()
 
-        selected_rows = self._selected_scatter_rows()
         palette = [
             {"point": (82, 205, 255), "curve": (248, 196, 92), "label": "primary"},
             {"point": (255, 132, 174), "curve": (145, 238, 190), "label": "shift"},
@@ -3925,6 +4011,9 @@ class HubViewer:
             if not raw_points:
                 loading_notes.append(f"Row {int(series_row_idx) + 1}: no points available.")
                 continue
+            series_fit = hr._fit_stitched_gaussian(raw_points)
+            if not isinstance(series_fit, dict):
+                series_fit = series_row.get("fit") if isinstance(series_row.get("fit"), dict) else None
             display_points = list(raw_points)
             fit_norm_context = None
             if self.normalize_display and display_points:
@@ -3939,6 +4028,7 @@ class HubViewer:
                 {
                     "row_idx": int(series_row_idx),
                     "row": series_row,
+                    "fit": series_fit,
                     "raw_points": raw_points,
                     "points": display_points,
                     "fit_norm_context": fit_norm_context,
@@ -3954,21 +4044,35 @@ class HubViewer:
             self.screen.blit(msg, (rect.x + 10, rect.y + 30))
             return
 
-        fit = row.get("fit")
+        fit = None
+        selected_idx = self.selected_row_index if self.selected_row_index is not None else None
+        for item in series:
+            if selected_idx is not None and int(item.get("row_idx", -1)) == int(selected_idx):
+                fit = item.get("fit")
+                break
+        if not isinstance(fit, dict) and series:
+            fit = series[0].get("fit")
         equation_text = ""
+        copy_equation_text = ""
         r2_text = "--"
         if isinstance(fit, dict):
             equation_text = str(fit.get("equation", "")).strip()
+            copy_equation_text = _fit_desmos_equation(fit)
             if hr._is_number(fit.get("r2")):
                 r2_text = f"{float(fit.get('r2')):.4f}"
         equation_y = rect.y + 24
         if equation_text:
-            copy_reserved = self._draw_equation_copy_button(rect, equation_text, equation_y, margin=10)
-            equation_label = f"Master equation: {equation_text} | R^2={r2_text}"
+            copy_reserved = self._draw_equation_copy_button(
+                rect,
+                copy_equation_text or equation_text,
+                equation_y,
+                margin=10,
+            )
+            equation_label = f"Bell curve equation: {equation_text} | R^2={r2_text}"
             equation_color = (235, 210, 146)
             equation_width = max(40, rect.width - 20 - copy_reserved)
         else:
-            equation_label = "Master equation: not enough data"
+            equation_label = "Bell curve equation: not enough data"
             equation_color = (170, 170, 170)
             equation_width = max(40, rect.width - 20)
         self.screen.blit(
@@ -3996,12 +4100,13 @@ class HubViewer:
         raw_max_x = max(xs)
         raw_min_y = min(ys)
         raw_max_y = max(ys)
-        min_x, max_x = (raw_min_x, raw_max_x) if raw_max_x > raw_min_x else (raw_min_x - 0.05, raw_max_x + 0.05)
+        min_x = _MASTER_DETAIL_CURVE_MIN_X
+        max_x = _MASTER_DETAIL_CURVE_MAX_X
+        if raw_min_x < min_x:
+            min_x = raw_min_x
+        if raw_max_x > max_x:
+            max_x = raw_max_x
         min_y, max_y = (raw_min_y, raw_max_y) if raw_max_y > raw_min_y else (raw_min_y - 0.05, raw_max_y + 0.05)
-        if raw_max_x > raw_min_x:
-            pad = (raw_max_x - raw_min_x) * 0.04
-            min_x -= pad
-            max_x += pad
         if raw_max_y > raw_min_y:
             pad = (raw_max_y - raw_min_y) * 0.04
             min_y -= pad
@@ -4046,7 +4151,7 @@ class HubViewer:
                     }
                 )
         for item in series:
-            row_fit = item["row"].get("fit") if isinstance(item.get("row"), dict) else None
+            row_fit = item.get("fit")
             fit_segments = []
             if isinstance(row_fit, dict):
                 apex_x = row_fit.get("apex_x")
@@ -4061,8 +4166,12 @@ class HubViewer:
                     and hr._is_number(sigma_right)
                 ):
                     curve = []
-                    for i in range(180):
-                        xv = min_x + ((max_x - min_x) * float(i) / 179.0)
+                    for i in range(_MASTER_DETAIL_CURVE_SAMPLES):
+                        xv = _MASTER_DETAIL_CURVE_MIN_X + (
+                            (_MASTER_DETAIL_CURVE_MAX_X - _MASTER_DETAIL_CURVE_MIN_X)
+                            * float(i)
+                            / float(_MASTER_DETAIL_CURVE_SAMPLES - 1)
+                        )
                         yv = hr._predict_piecewise_gaussian(
                             float(xv),
                             float(apex_x),
@@ -4160,37 +4269,94 @@ class HubViewer:
         return True
 
     def _selected_details_payload(self) -> dict | None:
-        row = self._selected_row()
-        if not isinstance(row, dict):
+        selected_rows = self._selected_scatter_rows()
+        if not selected_rows:
             return None
-        raw_points = []
-        raw_points_src = row.get("points")
-        if isinstance(raw_points_src, list):
-            for pair in raw_points_src:
-                if not isinstance(pair, (tuple, list)) or len(pair) < 2:
-                    continue
-                if hr._is_number(pair[0]) and hr._is_number(pair[1]):
-                    raw_points.append((float(pair[0]), float(pair[1])))
-        if not raw_points:
+        palette = [
+            {"point": (43, 109, 183), "curve": (205, 139, 32), "label": "Primary"},
+            {"point": (178, 71, 117), "curve": (51, 132, 91), "label": "Comparison"},
+        ]
+        series = []
+        for series_i, (row_idx, row) in enumerate(selected_rows[:2]):
+            if not isinstance(row, dict):
+                continue
+            raw_points = []
+            raw_points_src = row.get("points")
+            if isinstance(raw_points_src, list):
+                for pair in raw_points_src:
+                    if not isinstance(pair, (tuple, list)) or len(pair) < 2:
+                        continue
+                    if hr._is_number(pair[0]) and hr._is_number(pair[1]):
+                        raw_points.append((float(pair[0]), float(pair[1])))
+            if not raw_points:
+                continue
+            fit = hr._fit_stitched_gaussian(raw_points)
+            if not isinstance(fit, dict):
+                fit = row.get("fit") if isinstance(row.get("fit"), dict) else None
+            color_info = palette[min(series_i, len(palette) - 1)]
+            series.append(
+                {
+                    "row_idx": int(row_idx),
+                    "row": row,
+                    "points": raw_points,
+                    "fit": fit,
+                    "stats": _bell_curve_fit_stats(raw_points, fit),
+                    "point_color": color_info["point"],
+                    "curve_color": color_info["curve"],
+                    "label": color_info["label"],
+                }
+            )
+        if not series:
             return None
-        fit = row.get("fit") if isinstance(row.get("fit"), dict) else hr._fit_stitched_gaussian(raw_points)
-        stats = _bell_curve_fit_stats(raw_points, fit)
+        primary = series[0]
         return {
-            "row": row,
-            "points": raw_points,
-            "fit": fit,
-            "stats": stats,
+            "row": primary["row"],
+            "points": primary["points"],
+            "fit": primary["fit"],
+            "stats": primary["stats"],
+            "series": series,
         }
 
     def _draw_selected_details_view(self, payload: dict, width: int, height: int) -> None:
         pg = self.pg
         screen = self.screen
-        screen.fill((10, 12, 16))
+        paper_bg = (246, 248, 250)
+        panel_bg = (255, 255, 255)
+        plot_bg = (255, 255, 255)
+        ink = (30, 34, 40)
+        muted = (96, 104, 116)
+        grid = (224, 228, 234)
+        axis = (86, 94, 106)
+        point_color = (43, 109, 183)
+        fit_color = (205, 139, 32)
+        screen.fill(paper_bg)
         payload["_copy_hits"] = []
         row = payload.get("row") if isinstance(payload, dict) else None
-        points = payload.get("points") if isinstance(payload.get("points"), list) else []
-        fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else None
-        stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+        series = payload.get("series") if isinstance(payload.get("series"), list) else []
+        if not series:
+            series = [
+                {
+                    "row": row,
+                    "points": payload.get("points") if isinstance(payload.get("points"), list) else [],
+                    "fit": payload.get("fit") if isinstance(payload.get("fit"), dict) else None,
+                    "stats": payload.get("stats") if isinstance(payload.get("stats"), dict) else {},
+                    "point_color": point_color,
+                    "curve_color": fit_color,
+                    "label": "Primary",
+                }
+            ]
+        points = []
+        for item in series:
+            if isinstance(item, dict) and isinstance(item.get("points"), list):
+                points.extend(item["points"])
+        active_detail_index = _safe_int(payload.get("_active_detail_index"))
+        if active_detail_index is None:
+            active_detail_index = 0
+        active_detail_index = max(0, min(int(active_detail_index), max(0, len(series) - 1)))
+        payload["_active_detail_index"] = int(active_detail_index)
+        active_item = series[active_detail_index] if series else {}
+        fit = active_item.get("fit") if isinstance(active_item, dict) and isinstance(active_item.get("fit"), dict) else None
+        stats = active_item.get("stats") if isinstance(active_item, dict) and isinstance(active_item.get("stats"), dict) else {}
 
         margin = 22
         info_w = 348
@@ -4198,29 +4364,43 @@ class HubViewer:
         info_rect = pg.Rect(graph_rect.right + margin, 76, info_w, height - 112)
 
         env_rate = row.get("env_rate") if isinstance(row, dict) else None
-        master_num = row.get("master_run_num") if isinstance(row, dict) else None
         step_idx = _safe_int(row.get("step_index")) if isinstance(row, dict) else None
-        title = "Simulation Details"
+        title = "Bell Curve Comparison" if len(series) > 1 else "Bell Curve"
         if step_idx is not None:
-            title += f" | step {int(step_idx) + 1}"
+            title += f"  |  Step {int(step_idx) + 1}"
         if hr._is_number(env_rate):
-            title += f" | env {float(env_rate):.4g}"
-        if master_num is not None:
-            title += f" | master_{int(master_num)}"
-        screen.blit(self.font.render(hr._fit_text(self.font, title, width - (2 * margin)), True, (230, 234, 242)), (margin, 18))
-        hint = "Esc/Q/Backspace closes this details view"
-        screen.blit(self.tiny.render(hint, True, (156, 166, 184)), (margin, 48))
+            title += f"  |  Environmental Change Speed {float(env_rate):.4g}"
+        screen.blit(self.font.render(hr._fit_text(self.font, title, width - (2 * margin)), True, ink), (margin, 18))
+        subtitle = "Observed Species Fitness With Differentiable Bell-Curve Fit"
+        screen.blit(self.tiny.render(subtitle, True, muted), (margin, 48))
+        key_x = margin
+        key_y = 62
+        for key_idx, item in enumerate(series[:2]):
+            if not isinstance(item, dict):
+                continue
+            base_color = item.get("point_color") if isinstance(item.get("point_color"), tuple) else point_color
+            curve_color = item.get("curve_color") if isinstance(item.get("curve_color"), tuple) else fit_color
+            row_for_label = item.get("row") if isinstance(item.get("row"), dict) else {}
+            key_label = str(item.get("label", f"Graph {key_idx + 1}"))
+            env_for_label = row_for_label.get("env_rate") if isinstance(row_for_label, dict) else None
+            if hr._is_number(env_for_label):
+                key_label += f" Env Speed {float(env_for_label):.4g}"
+            pg.draw.circle(screen, base_color, (key_x + 5, key_y + 6), 4)
+            pg.draw.line(screen, curve_color, (key_x + 16, key_y + 6), (key_x + 46, key_y + 6), 3)
+            label_surf = self.tiny.render(key_label, True, ink)
+            screen.blit(label_surf, (key_x + 52, key_y))
+            key_x += min(330, label_surf.get_width() + 86)
         if self.export_status:
-            status_color = (172, 226, 178) if self._export_status_ok else (255, 164, 164)
+            status_color = (46, 125, 72) if self._export_status_ok else (170, 54, 54)
             screen.blit(
                 self.tiny.render(hr._fit_text(self.tiny, self.export_status, width - (2 * margin)), True, status_color),
                 (margin + 260, 48),
             )
 
-        pg.draw.rect(screen, (15, 17, 22), graph_rect)
-        pg.draw.rect(screen, (76, 84, 98), graph_rect, 1)
-        pg.draw.rect(screen, (17, 19, 24), info_rect)
-        pg.draw.rect(screen, (76, 84, 98), info_rect, 1)
+        pg.draw.rect(screen, panel_bg, graph_rect)
+        pg.draw.rect(screen, (190, 196, 205), graph_rect, 1)
+        pg.draw.rect(screen, panel_bg, info_rect)
+        pg.draw.rect(screen, (190, 196, 205), info_rect, 1)
 
         numeric_points = [
             (float(x), float(y))
@@ -4228,7 +4408,7 @@ class HubViewer:
             if hr._is_number(x) and hr._is_number(y)
         ]
         if not numeric_points:
-            msg = self.small.render("No points available.", True, (170, 170, 170))
+            msg = self.small.render("No points available.", True, muted)
             screen.blit(msg, (graph_rect.x + 12, graph_rect.y + 12))
             return
 
@@ -4238,20 +4418,21 @@ class HubViewer:
         raw_max_x = max(xs)
         raw_min_y = min(ys)
         raw_max_y = max(ys)
-        min_x, max_x = (raw_min_x, raw_max_x) if raw_max_x > raw_min_x else (raw_min_x - 0.05, raw_max_x + 0.05)
+        min_x = _MASTER_DETAIL_CURVE_MIN_X
+        max_x = _MASTER_DETAIL_CURVE_MAX_X
+        if raw_min_x < min_x:
+            min_x = raw_min_x
+        if raw_max_x > max_x:
+            max_x = raw_max_x
         min_y, max_y = (raw_min_y, raw_max_y) if raw_max_y > raw_min_y else (raw_min_y - 0.05, raw_max_y + 0.05)
-        if raw_max_x > raw_min_x:
-            pad = (raw_max_x - raw_min_x) * 0.05
-            min_x -= pad
-            max_x += pad
         if raw_max_y > raw_min_y:
             pad = (raw_max_y - raw_min_y) * 0.08
             min_y -= pad
             max_y += pad
 
-        plot = pg.Rect(graph_rect.x + 54, graph_rect.y + 40, graph_rect.width - 76, graph_rect.height - 82)
-        pg.draw.rect(screen, (12, 14, 19), plot)
-        pg.draw.rect(screen, (58, 66, 78), plot, 1)
+        plot = pg.Rect(graph_rect.x + 86, graph_rect.y + 48, graph_rect.width - 116, graph_rect.height - 102)
+        pg.draw.rect(screen, plot_bg, plot)
+        pg.draw.rect(screen, axis, plot, 1)
 
         def _to_px(xv: float, yv: float) -> tuple[int, int]:
             px = plot.x + int(((float(xv) - min_x) / max(1e-12, max_x - min_x)) * plot.width)
@@ -4260,93 +4441,158 @@ class HubViewer:
 
         for gx in range(1, 4):
             x = plot.x + int(plot.width * gx / 4.0)
-            pg.draw.line(screen, (30, 34, 42), (x, plot.y), (x, plot.bottom), 1)
+            pg.draw.line(screen, grid, (x, plot.y), (x, plot.bottom), 1)
         for gy in range(1, 4):
             y = plot.y + int(plot.height * gy / 4.0)
-            pg.draw.line(screen, (30, 34, 42), (plot.x, y), (plot.right, y), 1)
+            pg.draw.line(screen, grid, (plot.x, y), (plot.right, y), 1)
+        pg.draw.line(screen, axis, (plot.x, plot.bottom), (plot.right, plot.bottom), 2)
+        pg.draw.line(screen, axis, (plot.x, plot.y), (plot.x, plot.bottom), 2)
 
         fit_segments = []
-        if isinstance(fit, dict):
-            apex_x = fit.get("apex_x")
-            apex_y = fit.get("apex_y")
-            sigma_left = fit.get("sigma_left")
-            sigma_right = fit.get("sigma_right")
-            shape_power = fit.get("shape_power", 2.0)
-            if (
-                hr._is_number(apex_x)
-                and hr._is_number(apex_y)
-                and hr._is_number(sigma_left)
-                and hr._is_number(sigma_right)
-            ):
-                curve = []
-                for idx in range(300):
-                    xv = min_x + ((max_x - min_x) * float(idx) / 299.0)
-                    yv = hr._predict_piecewise_gaussian(
-                        float(xv),
-                        float(apex_x),
-                        float(apex_y),
-                        float(sigma_left),
-                        float(sigma_right),
-                        shape_power=(float(shape_power) if hr._is_number(shape_power) else 2.0),
-                    )
-                    if hr._is_number(yv):
-                        curve.append((float(xv), float(yv)))
-                for idx in range(1, len(curve)):
-                    fit_segments.append((curve[idx - 1], curve[idx]))
+        for item in series:
+            if not isinstance(item, dict):
+                continue
+            row_fit = item.get("fit") if isinstance(item.get("fit"), dict) else None
+            curve_color = item.get("curve_color") if isinstance(item.get("curve_color"), tuple) else fit_color
+            if isinstance(row_fit, dict):
+                apex_x = row_fit.get("apex_x")
+                apex_y = row_fit.get("apex_y")
+                sigma_left = row_fit.get("sigma_left")
+                sigma_right = row_fit.get("sigma_right")
+                shape_power = row_fit.get("shape_power", 2.0)
+                if (
+                    hr._is_number(apex_x)
+                    and hr._is_number(apex_y)
+                    and hr._is_number(sigma_left)
+                    and hr._is_number(sigma_right)
+                ):
+                    curve = []
+                    for idx in range(_MASTER_DETAIL_CURVE_SAMPLES):
+                        xv = _MASTER_DETAIL_CURVE_MIN_X + (
+                            (_MASTER_DETAIL_CURVE_MAX_X - _MASTER_DETAIL_CURVE_MIN_X)
+                            * float(idx)
+                            / float(_MASTER_DETAIL_CURVE_SAMPLES - 1)
+                        )
+                        yv = hr._predict_piecewise_gaussian(
+                            float(xv),
+                            float(apex_x),
+                            float(apex_y),
+                            float(sigma_left),
+                            float(sigma_right),
+                            shape_power=(float(shape_power) if hr._is_number(shape_power) else 2.0),
+                        )
+                        if hr._is_number(yv):
+                            curve.append((float(xv), float(yv)))
+                    for idx in range(1, len(curve)):
+                        fit_segments.append((curve_color, curve[idx - 1], curve[idx]))
 
         y_den = max(1e-12, raw_max_y - raw_min_y)
-        for xv, yv in numeric_points:
-            n = max(0.0, min(1.0, (float(yv) - raw_min_y) / y_den))
-            color = (42 + int(210 * n), 128 + int(95 * n), 236 - int(166 * n))
-            radius = 2 + int(round(3 * n))
-            pg.draw.circle(screen, color, _to_px(xv, yv), radius)
-        for start, end in fit_segments:
-            pg.draw.line(screen, (248, 196, 92), _to_px(start[0], start[1]), _to_px(end[0], end[1]), 3)
+        for item in series:
+            if not isinstance(item, dict) or not isinstance(item.get("points"), list):
+                continue
+            base_color = item.get("point_color") if isinstance(item.get("point_color"), tuple) else point_color
+            for xv, yv in item["points"]:
+                n = max(0.0, min(1.0, (float(yv) - raw_min_y) / y_den))
+                color = (
+                    max(20, int(base_color[0]) - 8 + int(30 * n)),
+                    max(50, int(base_color[1]) - 10 + int(24 * n)),
+                    min(230, int(base_color[2]) + int(18 * n)),
+                )
+                pg.draw.circle(screen, color, _to_px(xv, yv), 3)
+        for curve_color, start, end in fit_segments:
+            pg.draw.line(screen, curve_color, _to_px(start[0], start[1]), _to_px(end[0], end[1]), 3)
 
-        screen.blit(self.tiny.render(f"{raw_max_y:.6g}", True, (156, 162, 174)), (plot.x - 48, plot.y - 2))
-        screen.blit(self.tiny.render(f"{raw_min_y:.6g}", True, (156, 162, 174)), (plot.x - 48, plot.bottom - 14))
-        screen.blit(self.tiny.render(f"{raw_min_x:.6g}", True, (156, 162, 174)), (plot.x, plot.bottom + 5))
-        max_x_label = self.tiny.render(f"{raw_max_x:.6g}", True, (156, 162, 174))
+        screen.blit(self.tiny.render(f"{max_y:.6g}", True, muted), (plot.x - 52, plot.y - 2))
+        screen.blit(self.tiny.render(f"{min_y:.6g}", True, muted), (plot.x - 52, plot.bottom - 14))
+        screen.blit(self.tiny.render(f"{min_x:.6g}", True, muted), (plot.x, plot.bottom + 6))
+        max_x_label = self.tiny.render(f"{max_x:.6g}", True, muted)
         screen.blit(max_x_label, (plot.right - max_x_label.get_width(), plot.bottom + 5))
-        screen.blit(self.small.render("evolution speed", True, (176, 186, 204)), (plot.x + 8, plot.bottom + 24))
-        screen.blit(self.small.render("fitness", True, (176, 186, 204)), (plot.x - 48, plot.y + 18))
-        legend = self.tiny.render("points = observed fitness | gold line = stitched bell curve", True, (198, 205, 218))
-        screen.blit(legend, (plot.x + 8, plot.y + 8))
+        x_label = self.small.render("Evolution Speed", True, ink)
+        screen.blit(x_label, (plot.centerx - (x_label.get_width() // 2), plot.bottom + 30))
+        y_label = self.small.render("Fitness in Minutes Lived", True, ink)
+        y_label = pg.transform.rotate(y_label, 90)
+        screen.blit(y_label, (graph_rect.x + 18, plot.centery - (y_label.get_height() // 2)))
+        legend_x = plot.x + 12
+        legend_y = plot.y + 12
+        for legend_idx, item in enumerate(series[:2]):
+            base_color = item.get("point_color") if isinstance(item.get("point_color"), tuple) else point_color
+            curve_color = item.get("curve_color") if isinstance(item.get("curve_color"), tuple) else fit_color
+            label = str(item.get("label", "Series"))
+            row_for_label = item.get("row") if isinstance(item.get("row"), dict) else {}
+            env_for_label = row_for_label.get("env_rate") if isinstance(row_for_label, dict) else None
+            if hr._is_number(env_for_label):
+                label = f"{label} Env Speed {float(env_for_label):.4g}"
+            ly = legend_y + (legend_idx * 18)
+            pg.draw.circle(screen, base_color, (legend_x + 5, ly + 6), 4)
+            screen.blit(self.tiny.render("Observed Fitness", True, ink), (legend_x + 16, ly))
+            pg.draw.line(screen, curve_color, (legend_x + 136, ly + 6), (legend_x + 176, ly + 6), 3)
+            screen.blit(self.tiny.render(label, True, ink), (legend_x + 184, ly))
 
         y = info_rect.y + 12
         line_h = max(16, int(self.small.get_linesize()))
         small_h = max(13, int(self.tiny.get_linesize()))
-        screen.blit(self.small.render("Bell Curve Equation", True, (230, 214, 162)), (info_rect.x + 12, y))
+        payload["_details_toggle_hits"] = []
+        if len(series) > 1:
+            toggle_x = info_rect.x + 12
+            toggle_y = y
+            toggle_h = max(18, line_h + 2)
+            for idx, item in enumerate(series[:2]):
+                label = f"Graph {idx + 1}"
+                row_for_label = item.get("row") if isinstance(item, dict) and isinstance(item.get("row"), dict) else {}
+                env_for_label = row_for_label.get("env_rate") if isinstance(row_for_label, dict) else None
+                if hr._is_number(env_for_label):
+                    label += f": Env Speed {float(env_for_label):.4g}"
+                label_w = max(96, int(self.tiny.size(label)[0]) + 18)
+                rect = pg.Rect(toggle_x, toggle_y, label_w, toggle_h)
+                is_active = int(idx) == int(active_detail_index)
+                fill = (220, 229, 242) if is_active else (244, 246, 249)
+                border = (70, 98, 138) if is_active else (172, 180, 192)
+                pg.draw.rect(screen, fill, rect)
+                pg.draw.rect(screen, border, rect, 1)
+                text_color = ink if is_active else muted
+                txt = self.tiny.render(label, True, text_color)
+                screen.blit(txt, (rect.x + 9, rect.y + ((rect.height - txt.get_height()) // 2)))
+                payload["_details_toggle_hits"].append((rect.copy(), int(idx)))
+                toggle_x += label_w + 8
+            y += toggle_h + 10
+        screen.blit(self.small.render("Bell Curve Equation", True, ink), (info_rect.x + 12, y))
         equation = str(fit.get("equation", "")) if isinstance(fit, dict) else ""
+        copy_equation = _fit_desmos_equation(fit)
         if equation:
-            self._draw_details_copy_button(payload, "Copy Eq", equation, info_rect.right - 82, y - 2)
+            self._draw_details_copy_button(
+                payload,
+                "Copy Eq",
+                copy_equation or equation,
+                info_rect.right - 82,
+                y - 2,
+            )
         y += line_h
         if equation:
             for line in self._wrap_text_for_font(equation, self.tiny, info_rect.width - 24):
-                screen.blit(self.tiny.render(line, True, (214, 218, 226)), (info_rect.x + 12, y))
+                screen.blit(self.tiny.render(line, True, (54, 60, 70)), (info_rect.x + 12, y))
                 y += small_h + 2
         else:
-            screen.blit(self.tiny.render("No bell curve fit available.", True, (168, 172, 184)), (info_rect.x + 12, y))
+            screen.blit(self.tiny.render("No bell curve fit available.", True, muted), (info_rect.x + 12, y))
             y += small_h + 2
         y += 8
 
         rows = [
             ("P-value", _format_stat(stats.get("p_value")), stats.get("p_source")),
-            ("r value", _format_stat(stats.get("r")), "actual vs predicted"),
-            ("r^2 value", _format_stat(stats.get("r2")), "recomputed from residuals"),
-            ("stored R^2", _format_stat(stats.get("stored_r2")), "saved fit value"),
-            ("points", str(int(stats.get("n", 0))), ""),
+            ("R Value", _format_stat(stats.get("r")), "Actual vs. Predicted"),
+            ("R^2 Value", _format_stat(stats.get("r2")), "Recomputed From Residuals"),
+            ("Stored R^2", _format_stat(stats.get("stored_r2")), "Saved Fit Value"),
+            ("Points", str(int(stats.get("n", 0))), ""),
             ("RMSE", _format_stat(stats.get("rmse")), ""),
             ("SSE", _format_stat(stats.get("sse")), ""),
-            ("apex x", _format_stat(fit.get("apex_x") if isinstance(fit, dict) else None), ""),
-            ("apex y", _format_stat(fit.get("apex_y") if isinstance(fit, dict) else None), ""),
-            ("sigma left", _format_stat(fit.get("sigma_left") if isinstance(fit, dict) else None), ""),
-            ("sigma right", _format_stat(fit.get("sigma_right") if isinstance(fit, dict) else None), ""),
-            ("shape power", _format_stat(fit.get("shape_power") if isinstance(fit, dict) else 2.0), ""),
-            ("fitness range", f"{_format_stat(stats.get('min_actual'))} .. {_format_stat(stats.get('max_actual'))}", "observed"),
-            ("prediction range", f"{_format_stat(stats.get('min_predicted'))} .. {_format_stat(stats.get('max_predicted'))}", "bell curve"),
+            ("Apex X", _format_stat(fit.get("apex_x") if isinstance(fit, dict) else None), ""),
+            ("Apex Y", _format_stat(fit.get("apex_y") if isinstance(fit, dict) else None), ""),
+            ("Sigma Left", _format_stat(fit.get("sigma_left") if isinstance(fit, dict) else None), ""),
+            ("Sigma Right", _format_stat(fit.get("sigma_right") if isinstance(fit, dict) else None), ""),
+            ("Shape Power", _format_stat(fit.get("shape_power") if isinstance(fit, dict) else 2.0), ""),
+            ("Fitness Range", f"{_format_stat(stats.get('min_actual'))} .. {_format_stat(stats.get('max_actual'))}", "Observed"),
+            ("Prediction Range", f"{_format_stat(stats.get('min_predicted'))} .. {_format_stat(stats.get('max_predicted'))}", "Bell Curve"),
         ]
-        screen.blit(self.small.render("Fit Statistics", True, (196, 216, 240)), (info_rect.x + 12, y))
+        screen.blit(self.small.render("Fit Statistics", True, ink), (info_rect.x + 12, y))
         self._draw_details_copy_button(
             payload,
             "Copy Stats",
@@ -4359,13 +4605,13 @@ class HubViewer:
         for label, value, note in rows:
             if y > info_rect.bottom - 18:
                 break
-            screen.blit(self.tiny.render(str(label), True, (166, 176, 194)), (info_rect.x + 12, y))
+            screen.blit(self.tiny.render(str(label), True, muted), (info_rect.x + 12, y))
             value_text = hr._fit_text(self.tiny, str(value), info_rect.width - label_w - 28)
-            screen.blit(self.tiny.render(value_text, True, (228, 232, 238)), (info_rect.x + label_w, y))
+            screen.blit(self.tiny.render(value_text, True, ink), (info_rect.x + label_w, y))
             y += small_h + 1
             if note:
                 note_text = hr._fit_text(self.tiny, str(note), info_rect.width - label_w - 28)
-                screen.blit(self.tiny.render(note_text, True, (130, 140, 156)), (info_rect.x + label_w, y))
+                screen.blit(self.tiny.render(note_text, True, muted), (info_rect.x + label_w, y))
                 y += small_h + 3
 
     def _draw_details_copy_button(self, payload: dict, label: str, text: str, x: int, y: int) -> None:
@@ -4375,9 +4621,9 @@ class HubViewer:
         btn_w = max(54, int(self.tiny.size(display_label)[0]) + 12)
         btn_h = max(16, int(self.tiny.get_linesize()) + 4)
         rect = self.pg.Rect(int(x), int(y), int(btn_w), int(btn_h))
-        self.pg.draw.rect(self.screen, (52, 58, 76), rect)
-        self.pg.draw.rect(self.screen, (150, 156, 174), rect, 1)
-        txt = self.tiny.render(str(display_label), True, (232, 236, 245))
+        self.pg.draw.rect(self.screen, (238, 241, 246), rect)
+        self.pg.draw.rect(self.screen, (132, 144, 160), rect, 1)
+        txt = self.tiny.render(str(display_label), True, (34, 42, 54))
         self.screen.blit(
             txt,
             (
@@ -4412,9 +4658,35 @@ class HubViewer:
             return True
         return False
 
+    def _handle_details_toggle_click(self, payload: dict, mx: int, my: int) -> bool:
+        hits = payload.get("_details_toggle_hits") if isinstance(payload, dict) else None
+        if not isinstance(hits, list):
+            return False
+        for item in reversed(hits):
+            if (not isinstance(item, tuple)) or len(item) != 2:
+                continue
+            rect, index = item
+            if not isinstance(rect, self.pg.Rect):
+                continue
+            if not rect.collidepoint(int(mx), int(my)):
+                continue
+            idx = _safe_int(index)
+            if idx is None:
+                return False
+            payload["_active_detail_index"] = int(idx)
+            return True
+        return False
+
     def _selected_details_stats_text(self, payload: dict, stat_rows: list[tuple[str, str, object]]) -> str:
         row = payload.get("row") if isinstance(payload, dict) else None
         fit = payload.get("fit") if isinstance(payload.get("fit"), dict) else None
+        series = payload.get("series") if isinstance(payload, dict) else None
+        active_idx = _safe_int(payload.get("_active_detail_index")) if isinstance(payload, dict) else None
+        if isinstance(series, list) and series:
+            idx = max(0, min(int(active_idx or 0), len(series) - 1))
+            item = series[idx] if isinstance(series[idx], dict) else {}
+            row = item.get("row") if isinstance(item.get("row"), dict) else row
+            fit = item.get("fit") if isinstance(item.get("fit"), dict) else fit
         env_rate = row.get("env_rate") if isinstance(row, dict) else None
         master_num = row.get("master_run_num") if isinstance(row, dict) else None
         step_idx = _safe_int(row.get("step_index")) if isinstance(row, dict) else None
@@ -4485,7 +4757,8 @@ class HubViewer:
                 ):
                     details_running = False
                 elif event.type == self.pg.MOUSEBUTTONDOWN and event.button == 1:
-                    self._handle_details_copy_click(payload, int(event.pos[0]), int(event.pos[1]))
+                    if not self._handle_details_toggle_click(payload, int(event.pos[0]), int(event.pos[1])):
+                        self._handle_details_copy_click(payload, int(event.pos[0]), int(event.pos[1]))
             self._draw_selected_details_view(payload, detail_w, detail_h)
             self.pg.display.flip()
             self.clock.tick(30)

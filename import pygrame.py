@@ -211,7 +211,7 @@ def reload_settings():
 
 '''
 Three traits:
-reproduction rate: what resource amount is needed to reproduce. How much o or c or n is needed to reproduce, however they need 10 of each resource to live
+reproduction rate: what resource amount is needed to reproduce. How much p or c or n is needed to reproduce, however they need 10 of each resource to live
 
 speed of evolution: how fast traits change over generations
 Charizma: when to dots encounter, how like one is to steal resources from the other, or if diffrent which one will kill the other
@@ -222,8 +222,8 @@ amount per reproduction - how much they reproduce each time (the more the more f
 Offspring size
 
 
-Resource taken: three resources, o, c, and n
-Each cycle the amount of resources added to the environment will be similar to last cycle but a bit diffrent, however o + c + n will be 100
+Resource taken: three resources, p, c, and n
+Each cycle the amount of resources added to the environment will be similar to last cycle but a bit diffrent, however p + c + n will be 100
 
 Each cycle there will be a new amount of resources added to the environment.
 The resources will be distributed to each dot. They collect resources until they have enough to reproduce. (reproduction rate)
@@ -269,7 +269,7 @@ class Dot:
         self._cancer_surface_size = None
         self._cancer_surface_color = None
 
-        self.favored_resource = random.choice(["o", "c", "n"])
+        self.favored_resource = random.choice(["p", "c", "n"])
         self.immune_system = random.randint(0, 5)  # resistance to antiBiotics
         self.optimal_ph = random.uniform(7, 8)  # preferred pH level, works best in 7.2
         self.optimal_temp = random.uniform(36, 38)  # preferred temperature, works best at 37
@@ -284,12 +284,12 @@ class Dot:
 
         # Evolution traits
         self.reproduction_resource = {
-            "o": random.randint(5, 1000),
+            "p": random.randint(5, 1000),
             "c": random.randint(5, 1000),
             "n": random.randint(5, 1000)
         }  # resources required to reproduce
         factor = 10/(total := sum(self.reproduction_resource.values()))
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             self.reproduction_resource[r] = max(1, int(self.reproduction_resource[r] * factor))   
 
         
@@ -301,7 +301,7 @@ class Dot:
         
         
         # Resources held
-        self.resources = {"o": 0, "c": 0, "n": 0}
+        self.resources = {"p": 0, "c": 0, "n": 0}
         
         # Life cycle count
         self.life_cycles = 0
@@ -337,12 +337,12 @@ class Dot:
         ph_effect = max(1.0, (ph_diff) * PH_EFFECT_SCALE)
         temp_effect = max(1.0, (temp_diff) * TEMP_EFFECT_SCALE)
         debuf = max(REPRO_DEBUF_MIN, ph_effect * temp_effect)
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             if self.resources[r] / debuf < self.reproduction_resource[r]:
                 reproduce = False
 
         if reproduce:
-            self.resources["o"] -= self.reproduction_resource["o"]
+            self.resources["p"] -= self.reproduction_resource["p"]
             self.resources["c"] -= self.reproduction_resource["c"]
             self.resources["n"] -= self.reproduction_resource["n"]
             child = _spawn_child_from_parent(self)
@@ -357,7 +357,7 @@ class Dot:
     def collect_resources(self):
         resource_pool = enviorment_state.get_resources()
         total = 0
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             if resource_pool[r] > 0:
                 
                 self.resources[r] += resource_pool[r]
@@ -372,8 +372,8 @@ class Dot:
 # Initial resource pool and changing conditions
 class enviorment():
     def __init__ (self):
-        self.resource_pool = {"o": 34, "c": 33, "n": 33}
-        self.deadNutreints = {"o": 0, "c": 0, "n": 0}
+        self.resource_pool = {"p": 34, "c": 33, "n": 33}
+        self.deadNutreints = {"p": 0, "c": 0, "n": 0}
         self.antiBiotic = 0
         self.ph = 7.0
         self.temp = 37.0
@@ -387,17 +387,17 @@ class enviorment():
 
 
     def dead_cell(self, resources):
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             self.deadNutreints[r] += resources[r]
     
 
     def regenerate_resources(self):
         # Slightly vary each resource value
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             self.resource_pool[r] += random.uniform(-0.1, 0.1)
 
         # Prevent negative values
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             if self.resource_pool[r] < 0:
                 self.resource_pool[r] = 0
             if self.resource_pool[r] > 1:
@@ -408,9 +408,9 @@ class enviorment():
 
         
 
-        # Normalize so that o + c + n ≈ 100
-        total = self.resource_pool["o"] + self.resource_pool["c"] + self.resource_pool["n"]
-        for r in ["o", "c", "n"]:
+        # Normalize so that p + c + n ≈ 100
+        total = self.resource_pool["p"] + self.resource_pool["c"] + self.resource_pool["n"]
+        for r in ["p", "c", "n"]:
             self.resource_pool[r] *= 1/ total
         '''
         if len(dots) > 300:
@@ -443,12 +443,12 @@ class enviorment():
 
     def get_resources(self):
         const = len(dots)
-        return {"o": (self.resource_pool["o"] * self.foodAmnt + self.deadNutreints["o"])/const,
+        return {"p": (self.resource_pool["p"] * self.foodAmnt + self.deadNutreints["p"])/const,
                 "c": (self.resource_pool["c"] * self.foodAmnt + self.deadNutreints["c"])/const,
                 "n": (self.resource_pool["n"] * self.foodAmnt + self.deadNutreints["n"])/const} 
     
     def update(self):
-        self.deadNutreints = {"o": 0, "c": 0, "n": 0}
+        self.deadNutreints = {"p": 0, "c": 0, "n": 0}
 
     def _change_interval(self):
         return max(1, round(500 / max(enviormentChangeRate, 1e-6)))
@@ -609,7 +609,7 @@ def _update_stats_snapshot():
                 )
                 infos.append(("color_square", chosen.color))
                 infos.append(
-                    f"Needs o:{str(chosen.reproduction_resource['o'])[0:5]} "
+                    f"Needs p:{str(chosen.reproduction_resource['p'])[0:5]} "
                     f"c:{str(chosen.reproduction_resource['c'])[0:5]} "
                     f"n:{str(chosen.reproduction_resource['n'])[0:5]}"
                 )
@@ -680,17 +680,7 @@ def _spawn_child_from_parent(parent):
     child.evolution_speed = max(0.001, parent.evolution_speed)
     child.size = max(1, parent.size + (random.uniform(-child.evolution_speed, child.evolution_speed)))
     child.favored_resource = parent.favored_resource
-    '''
-    if (child.immune_system > 0.17):
-        child.immune_system = 0 - 5
-    
-    '''
-    maxAmnt = child.evolution_speed * QUAN + (0.5 - IMMUNE_SYSTEM_QUAN_FACTOR * QUAN)  # 3.5 for 0
-
-
-
-    #maxAmnt = child.evolution_speed * -4.1#can start at 0.14 so. pow of 2 - 4.1, pow of 1, 3.5, pow of 3, 4.7
-    
+    maxAmnt = child.evolution_speed * QUAN + (0.5 - IMMUNE_SYSTEM_QUAN_FACTOR * QUAN)
     changeAmnt = int(round(random.uniform(-maxAmnt, maxAmnt)))
     child.immune_system = parent.immune_system + changeAmnt
     
@@ -700,20 +690,11 @@ def _spawn_child_from_parent(parent):
     child.optimal_ph = parent.optimal_ph + random.uniform(-child.evolution_speed * 1.5, child.evolution_speed * 1.5)
     child.optimal_temp = parent.optimal_temp + random.uniform(-child.evolution_speed * 1.5, child.evolution_speed * 1.5)
     child.color = parent.color.copy()
-    '''
-
-    if parent.evolution_speed > 0.17:
-        
-        child.immune_system = random.randint(0, 5)
-        
-    '''
-
-
-
+    
     
     total = 0
     total2 = 0
-    for r in ["o", "c", "n"]:
+    for r in ["p", "c", "n"]:
         mutation = int(random.uniform(-child.evolution_speed, child.evolution_speed) / 4)
         child.reproduction_resource[r] = max(1, parent.reproduction_resource[r] + mutation)
         if child.favored_resource != r:
@@ -722,7 +703,7 @@ def _spawn_child_from_parent(parent):
 
     if total > 0:
         factor = child.size / total * 2
-        for r in ["o", "c", "n"]:
+        for r in ["p", "c", "n"]:
             child.reproduction_resource[r] = max(1, int(child.reproduction_resource[r] * factor))
 
     child.reproduction_resource[child.favored_resource] = max(
@@ -731,7 +712,7 @@ def _spawn_child_from_parent(parent):
 
     if random.uniform(0, child.evolution_speed/3 + 0.0367) < 0.11:
         return child
-    for r in ["o", "c", "n"]:
+    for r in ["p", "c", "n"]:
         child.reproduction_resource[r] = float("inf")
     child.cancerous = True
     return child
